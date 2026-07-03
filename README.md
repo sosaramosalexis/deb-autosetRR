@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="https://placehold.co/120x179" width="90" alt="deb-autosetRR logo">
-  <!-- Replace src with your 784×1168 logo image (displayed at 90px wide) -->
-</p>
 
 [![GitHub](https://img.shields.io/static/v1?label=GitHub&message=sosaramosalexis%2Fdeb-autosetRR&color=181717&logo=github)](https://github.com/sosaramosalexis/deb-autosetRR)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
