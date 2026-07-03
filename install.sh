@@ -487,7 +487,7 @@ setup_share_and_creds() {
   local WEBUI_USER WEBUI_PASS
   local MOUNT_PATH MOUNT_NAME DISK_NAME DISK_SEL
   local SHARE_NAME SUDO_CALLER
-  local line name size mp mountpoint uuid part_mp existing_fs fstype
+  local line name size mp mountpoint uuid part_mp existing_fs fstype existing_shares existing_share
 
   SUDO_CALLER="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
 
@@ -617,6 +617,28 @@ setup_share_and_creds() {
     fi
     read -rp "Enter share name [media]: " SHARE_NAME
     SHARE_NAME="${SHARE_NAME:-media}"
+
+    existing_shares=$(awk -v mp="$MOUNT_PATH" '
+      /^\[/{ s=$0; gsub(/[][]/,"",s) }
+      /^[[:space:]]*path[[:space:]]*=/ {
+        p=$0; sub(/.*=[[:space:]]*/,"",p)
+        if (p == mp) print s
+      }
+    ' /etc/samba/smb.conf 2>/dev/null)
+    if [[ -n "$existing_shares" ]]; then
+      echo "Existing share(s) pointing to ${MOUNT_PATH}:"
+      while IFS= read -r existing_share; do
+        echo "  - [${existing_share}]"
+      done <<< "$existing_shares"
+      read -rp "Delete these shares and recreate? [y/N]: " del_shares
+      if [[ "$del_shares" =~ ^[yY] ]]; then
+        while IFS= read -r existing_share; do
+          sed -i "/^\[${existing_share}\]/,/^\[/{/^\[${existing_share}\]/d;/^\[/!d;}" /etc/samba/smb.conf
+          echo "  Deleted [${existing_share}]"
+        done <<< "$existing_shares"
+      fi
+    fi
+
     if grep -q "^\\[${SHARE_NAME}\\]" /etc/samba/smb.conf 2>/dev/null; then
       echo "Share '${SHARE_NAME}' already exists in smb.conf."
     else
