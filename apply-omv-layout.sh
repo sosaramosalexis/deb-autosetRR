@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-bash <(curl -fsSL https://raw.githubusercontent.com/sosramalex/deb-autosetRR/main/install.sh) --apply-omv-layout
+bash <(curl -fsSL https://raw.githubusercontent.com/sosaramosalexis/deb-autosetRR/main/install.sh) --apply-omv-layout

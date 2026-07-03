@@ -3,18 +3,7 @@ set -euo pipefail
 
 echo "[deb-autosetRR] version d028586 (fix-local-outside-function)" >&2
 
-show_banner() {
-  echo "    _    _     ____   ___  ____    _    ____       ____  _____ ____          _   _   _ _____ ___  ____  ____  "
-  echo "   / \  | |   / ___| / _ \/ ___|  / \  |  _ \     |  _ \| ____| __ )        / \ | | | |_   _/ _ \|  _ \|  _ \ "
-  echo "  / _ \ | |   \___ \| | | \___ \ / _ \ | |_) |____| | | |  _| |  _ \ _____ / _ \| | | | | || | | | |_) | |_) |"
-  echo " / ___ \| |___ ___) | |_| |___) / ___ \|  _ <_____| |_| | |___| |_) |_____/ ___ \ |_| | | || |_| |  _ <|  _ < "
-  echo "/_/   \_\_____|____/ \___/|____/_/   \_\_| \_\    |____/|_____|____/     /_/   \_\___/  |_| \___/|_| \_\_| \_\\"
-  echo ""
-  echo "            Media Automation Stack — Radarr, Prowlarr, qBit & Media Server"
-  echo ""
-}
 
-show_banner
 
 SERVARR_SCRIPT_URL="https://raw.githubusercontent.com/Servarr/Wiki/master/servarr/servarr-install-script.sh"
 JELLYFIN_INSTALL_URL="https://repo.jellyfin.org/install-debuntu.sh"
@@ -31,7 +20,7 @@ require_root() {
     echo "  bash install.sh"
     echo ""
     echo "Or, if sudo is already configured:"
-    echo "  curl -fsSL https://raw.githubusercontent.com/sosramalex/deb-autosetRR/main/install.sh | sudo bash"
+    echo "  curl -fsSL https://raw.githubusercontent.com/sosaramosalexis/deb-autosetRR/main/install.sh | sudo bash"
     exit 1
   fi
 }
@@ -55,8 +44,7 @@ install_base_packages() {
     gnupg \
     libsqlite3-0 \
     sqlite3 \
-    wget \
-    whiptail
+    wget
 }
 
 install_servarr_app() {
@@ -200,31 +188,30 @@ except:
 
 claim_plex_server() {
   if ! systemctl is-active --quiet plexmediaserver 2>/dev/null; then
-    whiptail --msgbox --title "Plex Not Running" \
-      "Start it first with: systemctl start plexmediaserver" 7 50
+    echo "Plex is not running. Start it first: systemctl start plexmediaserver"
     return 1
   fi
 
   local PLEX_CLAIM_TOKEN
-  PLEX_CLAIM_TOKEN=$(whiptail --inputbox --title "Claim Plex" \
-    "Go to https://plex.tv/claim and copy your claim token.\n\nPaste it below (or leave empty to skip):" \
-    10 60 3>&1 1>&2 2>&3) || return 1
+  echo "Go to https://plex.tv/claim and copy your claim token."
+  read -rp "Paste it here (or leave empty to skip): " PLEX_CLAIM_TOKEN
 
   if [[ -n "${PLEX_CLAIM_TOKEN}" ]]; then
-    local response
+    local response http_code
     response=$(curl -s -X POST \
-      -H "Content-Type: application/json" \
-      -d "{\"claim-token\": \"${PLEX_CLAIM_TOKEN}\"}" \
-      http://localhost:32400/myplex/claim)
-    if echo "$response" | grep -qi '"claimed"\|success\|true'; then
-      whiptail --msgbox --title "Success" "Plex claimed successfully!" 7 40
+      -w "%{http_code}" \
+      "http://localhost:32400/myplex/claim?token=${PLEX_CLAIM_TOKEN}")
+    http_code="${response: -3}"
+    response="${response::-3}"
+    if [[ "$http_code" == "200" ]] || echo "$response" | grep -qi "success"; then
+      echo "Plex claimed successfully!"
     else
-      whiptail --msgbox --title "Claim Failed" \
-        "Response: $response\n\nMake sure the token is valid at https://plex.tv/claim" 10 55
+      echo "Claim failed (HTTP $http_code)."
+      echo "$response"
+      echo "Make sure the token is valid at https://plex.tv/claim"
     fi
   else
-    whiptail --msgbox --title "Skipped" \
-      "Claim later at http://$(hostname -I | awk '{print $1}'):32400/web" 7 55
+    echo "Skipped. Claim later at http://$(hostname -I | awk '{print $1}'):32400/web"
   fi
 }
 
@@ -234,18 +221,15 @@ install_jellyfin() {
 }
 
 choose_media_server() {
-  local choice
-  choice=$(whiptail --menu --title "Media Server" \
-    "Choose a media server to install:" \
-    12 50 3 \
-    "1" "Plex Media Server" \
-    "2" "Jellyfin Server" \
-    "3" "Skip media server" \
-    3>&1 1>&2 2>&3) || return
+  echo "Choose a media server to install:"
+  echo "  1) Plex Media Server"
+  echo "  2) Jellyfin Server"
+  echo "  3) Skip media server"
+  read -rp "Choice [1-3]: " choice
   case "$choice" in
     1) install_plex ;;
     2) install_jellyfin ;;
-    3) echo "Skipping media server installation." ;;
+    *) echo "Skipping media server installation." ;;
   esac
 }
 
@@ -283,23 +267,17 @@ setup_omv_storage() {
   done < <(find /srv -maxdepth 1 -name 'dev-disk-by-uuid-*' 2>/dev/null | sort)
 
   if [[ ${#drives[@]} -eq 0 ]]; then
-    DATA_PATH=$(whiptail --inputbox --title "Storage Path" \
-      "No OMV drives found at /srv/dev-disk-by-uuid-*\n\nEnter your storage path manually:" \
-      10 60 "/srv/data" 3>&1 1>&2 2>&3) || DATA_PATH="/srv/data"
-    if [[ -z "$DATA_PATH" ]]; then
-      DATA_PATH="/srv/data"
-    fi
+    echo "No OMV drives found at /srv/dev-disk-by-uuid-*"
+    read -rp "Enter your storage path [/srv/data]: " DATA_PATH
+    DATA_PATH="${DATA_PATH:-/srv/data}"
   else
-    local menu_items=()
+    echo "Available drives:"
     for i in "${!drives[@]}"; do
-      local dev
-      dev="$(readlink -f "${drives[$i]}")"
-      menu_items+=("$((i+1))" "${drives[$i]}")
+      echo "  $((i+1))) ${drives[$i]}"
     done
     local sel
-    sel=$(whiptail --menu --title "Select Drive" \
-      "Available drives:" 15 65 "${#drives[@]}" \
-      "${menu_items[@]}" 3>&1 1>&2 2>&3) || sel=1
+    read -rp "Select drive [1]: " sel
+    sel="${sel:-1}"
     DATA_PATH="${drives[$((sel-1))]}"
   fi
 
@@ -480,11 +458,10 @@ fix_permissions_existing() {
 purge_all() {
   require_root
 
-  if ! whiptail --yesno --title "Confirm Purge" \
-    "This will REMOVE all installed services and their config data:\n\n\
-    - Radarr, Prowlarr, qBittorrent, Plex, Jellyfin\n\nContinue?" 12 55; then
-    return
-  fi
+  echo "This will REMOVE all installed services and their config data:"
+  echo "  - Radarr, Prowlarr, qBittorrent, Plex, Jellyfin"
+  read -rp "Continue? [y/N]: " confirm
+  [[ "$confirm" =~ ^[yY] ]] || return
 
   echo "Stopping services..."
   for svc in radarr prowlarr qbittorrent-nox plexmediaserver jellyfin; do
@@ -517,17 +494,16 @@ elif [[ "${1:-}" == "--purge" ]]; then
   purge_all
 else
   while true; do
-    choice=$(whiptail --menu --title "Deb Autorr" \
-      "Media Automation Stack — Radarr, Prowlarr, qBit & Media Server\n\nChoose an option:" \
-      18 65 7 \
-      "1" "Install full media stack (Debian)" \
-      "2" "Install full media stack (OMV)" \
-      "3" "Apply OMV layout (existing install)" \
-      "4" "Fix permissions on existing OMV folders" \
-      "5" "Claim Plex server" \
-      "6" "Purge everything and start fresh" \
-      "7" "Exit" \
-      3>&1 1>&2 2>&3) || exit 0
+    echo ""
+    echo "Choose an option:"
+    echo "  1) Install full media stack (Debian)"
+    echo "  2) Install full media stack (OMV)"
+    echo "  3) Apply OMV layout (existing install)"
+    echo "  4) Fix permissions on existing OMV folders"
+    echo "  5) Claim Plex server"
+    echo "  6) Purge everything and start fresh"
+    echo "  7) Exit"
+    read -rp "Choice [1-7]: " choice
     case "$choice" in
       1) main ;;
       2) main_omv ;;
