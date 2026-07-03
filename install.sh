@@ -516,7 +516,7 @@ setup_share_and_creds() {
       model=$(lsblk -dnlo MODEL "/dev/${name}" 2>/dev/null)
       [[ -z "$model" ]] && model="N/A"
 
-      if lsblk -nlo MOUNTPOINT "/dev/${name}" 2>/dev/null | grep -qxF '/'; then
+      if lsblk -lno MOUNTPOINT "/dev/${name}" 2>/dev/null | grep -qxF '/'; then
         tag="[OS]  ← system disk, DO NOT FORMAT"
       else
         tag="[DATA]"
@@ -534,7 +534,7 @@ setup_share_and_creds() {
       DISK_SEL="${DISK_SEL:-1}"
       DISK_NAME="${disks[$((DISK_SEL-1))]}"
 
-      part_mp=$(lsblk -nlo MOUNTPOINT "/dev/${DISK_NAME}" 2>/dev/null | grep -v '^$' | head -1)
+      part_mp=$(lsblk -lno MOUNTPOINT "/dev/${DISK_NAME}" 2>/dev/null | grep -v '^$' | head -1) || true
 
       if [[ -n "$part_mp" ]]; then
         MOUNT_PATH="$part_mp"
