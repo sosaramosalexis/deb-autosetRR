@@ -31,7 +31,8 @@ curl -fsSL https://raw.githubusercontent.com/sosaramosalexis/deb-autosetRR/main/
 4) Fix permissions on existing OMV folders
 5) Claim Plex server
 6) Purge everything and start fresh
-7) Exit
+7) Setup share, credentials & configure services
+8) Exit
 ```
 
 ### Debian (option 1)
@@ -57,6 +58,9 @@ Prompts for a claim token from https://plex.tv/claim and claims the server.
 
 ### Purge (option 6)
 Removes all services and config data. Preserves your media/downloads on the data drive.
+
+### Setup share, credentials & configure services (option 7)
+Prompts for WebUI credentials, lets you select/format/mount a disk, creates a Samba share, sets up `sambashare` group with permissions, creates `Plex/Downloads` and `Plex/Movies`, and configures Prowlarr / Radarr / qBittorrent auth and download paths via API.
 
 ## Default Ports
 
