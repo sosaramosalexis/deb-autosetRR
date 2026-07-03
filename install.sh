@@ -487,7 +487,7 @@ setup_share_and_creds() {
   local WEBUI_USER WEBUI_PASS
   local MOUNT_PATH MOUNT_NAME DISK_NAME DISK_SEL
   local SHARE_NAME SUDO_CALLER
-  local line name size mp mountpoint uuid
+  local line name size mp mountpoint uuid root_dev root_disk part_mp existing_fs fstype
 
   SUDO_CALLER="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
 
@@ -509,44 +509,95 @@ setup_share_and_creds() {
     local -a disks=()
     local -a disk_sizes=()
     echo ""
-    echo "Available physical disks:"
+    root_dev=$(findmnt -n -o SOURCE / 2>/dev/null || echo "")
+    root_disk=""
+    if [[ -n "$root_dev" ]]; then
+      root_disk=$(lsblk -nlo PKNAME "$root_dev" 2>/dev/null || true)
+    fi
+
+    echo "Available disks:"
     while IFS= read -r line; do
       name=$(echo "$line" | awk '{print $1}')
       size=$(echo "$line" | awk '{print $2}')
-      mp=$(lsblk -nlo MOUNTPOINT "/dev/${name}" 2>/dev/null | grep -v '^$' | head -1)
-      echo "  $(( ${#disks[@]} + 1 ))) /dev/${name}  (${size})  Mount: ${mp:-none}"
+      model=$(lsblk -dnlo MODEL "/dev/${name}" 2>/dev/null)
+      [[ -z "$model" ]] && model="N/A"
+
+      if [[ "$name" == "$root_disk" ]]; then
+        tag="[OS]  ← system disk, DO NOT FORMAT"
+      else
+        tag="[DATA]"
+      fi
+
+      echo "  $(( ${#disks[@]} + 1 ))) /dev/${name}  (${size})  ${model}  ${tag}"
       disks+=("$name")
       disk_sizes+=("$size")
     done < <(lsblk -dnlo NAME,SIZE,TYPE 2>/dev/null | awk '$3=="disk"')
 
     if [[ ${#disks[@]} -eq 0 ]]; then
-      echo "No physical disks found."
+      echo "No disks found."
     else
       read -rp "Select disk [1]: " DISK_SEL
       DISK_SEL="${DISK_SEL:-1}"
       DISK_NAME="${disks[$((DISK_SEL-1))]}"
-      mountpoint=$(lsblk -nlo MOUNTPOINT "/dev/${DISK_NAME}" 2>/dev/null | grep -v '^$' | head -1)
 
-      if [[ -n "$mountpoint" ]]; then
-        MOUNT_PATH="$mountpoint"
-        echo "Disk is already mounted at: $MOUNT_PATH"
-      else
-        echo "Disk /dev/${DISK_NAME} is not mounted."
-        read -rp "Do you want to format it as ext4? ALL DATA WILL BE LOST! [y/N]: " fmt_confirm
-        if [[ "$fmt_confirm" =~ ^[yY] ]]; then
-          echo "Formatting /dev/${DISK_NAME} as ext4..."
-          mkfs.ext4 -F "/dev/${DISK_NAME}"
+      part_mp=$(lsblk -nlo MOUNTPOINT "/dev/${DISK_NAME}" 2>/dev/null | grep -v '^$' | head -1)
+
+      if [[ -n "$part_mp" ]]; then
+        MOUNT_PATH="$part_mp"
+        echo "Disk has mounted partitions, using mount point: $MOUNT_PATH"
+        read -rp "Use this path for the media share? [Y/n]: " use_mp
+        if [[ "$use_mp" =~ ^[nN] ]]; then
+          MOUNT_PATH=""
         fi
-        read -rp "Enter a name for the mount point [/mnt/media]: " MOUNT_NAME
-        MOUNT_NAME="${MOUNT_NAME:-media}"
-        MOUNT_PATH="/mnt/${MOUNT_NAME}"
-        mkdir -p "$MOUNT_PATH"
-        uuid=$(blkid -s UUID -o value "/dev/${DISK_NAME}" 2>/dev/null)
-        if [[ -n "$uuid" ]]; then
-          echo "UUID=${uuid}  ${MOUNT_PATH}  ext4  defaults,nofail  0  2" >> /etc/fstab
-          echo "Added to /etc/fstab by UUID."
+      fi
+
+      if [[ -z "${MOUNT_PATH:-}" ]]; then
+        existing_fs=$(blkid -s TYPE -o value "/dev/${DISK_NAME}" 2>/dev/null || echo "")
+        if [[ -n "$existing_fs" ]]; then
+          echo "Disk /dev/${DISK_NAME} already has a ${existing_fs} filesystem."
+          read -rp "Mount it as-is without formatting? [Y/n]: " mount_asis
+          if [[ ! "$mount_asis" =~ ^[nN] ]]; then
+            read -rp "Enter a name for the mount point [/mnt/media]: " MOUNT_NAME
+            MOUNT_NAME="${MOUNT_NAME:-media}"
+            MOUNT_PATH="/mnt/${MOUNT_NAME}"
+            mkdir -p "$MOUNT_PATH"
+            uuid=$(blkid -s UUID -o value "/dev/${DISK_NAME}" 2>/dev/null)
+            if [[ -n "$uuid" ]]; then
+              echo "UUID=${uuid}  ${MOUNT_PATH}  ${existing_fs}  defaults,nofail  0  2" >> /etc/fstab
+              echo "Added to /etc/fstab by UUID."
+            fi
+            mount "/dev/${DISK_NAME}" "$MOUNT_PATH" 2>/dev/null || echo "Mount failed. Mount manually."
+          else
+            read -rp "Do you want to format it as ext4? ALL DATA WILL BE LOST! [y/N]: " fmt_confirm
+            if [[ "$fmt_confirm" =~ ^[yY] ]]; then
+              echo "Formatting /dev/${DISK_NAME} as ext4..."
+              mkfs.ext4 -F "/dev/${DISK_NAME}"
+            fi
+          fi
+        else
+          echo "Disk /dev/${DISK_NAME} has no detected filesystem."
+          read -rp "Do you want to format it as ext4? [y/N]: " fmt_confirm
+          if [[ "$fmt_confirm" =~ ^[yY] ]]; then
+            echo "Formatting /dev/${DISK_NAME} as ext4..."
+            mkfs.ext4 -F "/dev/${DISK_NAME}"
+          fi
         fi
-        mount "/dev/${DISK_NAME}" "$MOUNT_PATH" 2>/dev/null || echo "Mount failed. Mount manually."
+
+        if [[ -z "${MOUNT_PATH:-}" ]]; then
+          read -rp "Enter a name for the mount point [/mnt/media]: " MOUNT_NAME
+          MOUNT_NAME="${MOUNT_NAME:-media}"
+          MOUNT_PATH="/mnt/${MOUNT_NAME}"
+          mkdir -p "$MOUNT_PATH"
+          uuid=$(blkid -s UUID -o value "/dev/${DISK_NAME}" 2>/dev/null)
+          fstype="${existing_fs:-ext4}"
+          if [[ -n "$uuid" ]]; then
+            echo "UUID=${uuid}  ${MOUNT_PATH}  ${fstype}  defaults,nofail  0  2" >> /etc/fstab
+            echo "Added to /etc/fstab by UUID."
+            mount UUID="${uuid}" "$MOUNT_PATH" 2>/dev/null || mount "/dev/${DISK_NAME}" "$MOUNT_PATH" 2>/dev/null || echo "Mount failed. Mount manually."
+          else
+            mount "/dev/${DISK_NAME}" "$MOUNT_PATH" 2>/dev/null || echo "Mount failed. Mount manually."
+          fi
+        fi
       fi
     fi
   fi
