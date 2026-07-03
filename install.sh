@@ -483,6 +483,300 @@ purge_all() {
   echo "Purge complete. The OMV storage layout on your data drive was preserved."
 }
 
+setup_share_and_creds() {
+  local WEBUI_USER WEBUI_PASS
+  local MOUNT_PATH MOUNT_NAME DISK_NAME DISK_SEL
+  local SHARE_NAME SUDO_CALLER
+  local line name size mp mountpoint uuid
+
+  SUDO_CALLER="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
+
+  echo ""
+  echo "============================================"
+  echo "  WebUI Credentials"
+  echo "============================================"
+  read -rp "Enter WebUI username [admin]: " WEBUI_USER
+  WEBUI_USER="${WEBUI_USER:-admin}"
+  read -rsp "Enter WebUI password: " WEBUI_PASS
+  echo ""
+
+  echo ""
+  echo "============================================"
+  echo "  Disk Setup"
+  echo "============================================"
+  read -rp "Do you want to set up a disk for the media share? [y/N]: " setup_disk
+  if [[ "$setup_disk" =~ ^[yY] ]]; then
+    local -a disks=()
+    local -a disk_sizes=()
+    echo ""
+    echo "Available physical disks:"
+    while IFS= read -r line; do
+      name=$(echo "$line" | awk '{print $1}')
+      size=$(echo "$line" | awk '{print $2}')
+      mp=$(lsblk -nlo MOUNTPOINT "/dev/${name}" 2>/dev/null | grep -v '^$' | head -1)
+      echo "  $(( ${#disks[@]} + 1 ))) /dev/${name}  (${size})  Mount: ${mp:-none}"
+      disks+=("$name")
+      disk_sizes+=("$size")
+    done < <(lsblk -dnlo NAME,SIZE,TYPE 2>/dev/null | awk '$3=="disk"')
+
+    if [[ ${#disks[@]} -eq 0 ]]; then
+      echo "No physical disks found."
+    else
+      read -rp "Select disk [1]: " DISK_SEL
+      DISK_SEL="${DISK_SEL:-1}"
+      DISK_NAME="${disks[$((DISK_SEL-1))]}"
+      mountpoint=$(lsblk -nlo MOUNTPOINT "/dev/${DISK_NAME}" 2>/dev/null | grep -v '^$' | head -1)
+
+      if [[ -n "$mountpoint" ]]; then
+        MOUNT_PATH="$mountpoint"
+        echo "Disk is already mounted at: $MOUNT_PATH"
+      else
+        echo "Disk /dev/${DISK_NAME} is not mounted."
+        read -rp "Do you want to format it as ext4? ALL DATA WILL BE LOST! [y/N]: " fmt_confirm
+        if [[ "$fmt_confirm" =~ ^[yY] ]]; then
+          echo "Formatting /dev/${DISK_NAME} as ext4..."
+          mkfs.ext4 -F "/dev/${DISK_NAME}"
+        fi
+        read -rp "Enter a name for the mount point [/mnt/media]: " MOUNT_NAME
+        MOUNT_NAME="${MOUNT_NAME:-media}"
+        MOUNT_PATH="/mnt/${MOUNT_NAME}"
+        mkdir -p "$MOUNT_PATH"
+        uuid=$(blkid -s UUID -o value "/dev/${DISK_NAME}" 2>/dev/null)
+        if [[ -n "$uuid" ]]; then
+          echo "UUID=${uuid}  ${MOUNT_PATH}  ext4  defaults,nofail  0  2" >> /etc/fstab
+          echo "Added to /etc/fstab by UUID."
+        fi
+        mount "/dev/${DISK_NAME}" "$MOUNT_PATH" 2>/dev/null || echo "Mount failed. Mount manually."
+      fi
+    fi
+  fi
+
+  if [[ -z "${MOUNT_PATH:-}" ]]; then
+    read -rp "Enter path for media share [/srv/media]: " MOUNT_PATH
+    MOUNT_PATH="${MOUNT_PATH:-/srv/media}"
+    mkdir -p "$MOUNT_PATH"
+  fi
+
+  local PLEX_DOWNLOADS="${MOUNT_PATH}/Plex/Downloads"
+  local PLEX_MOVIES="${MOUNT_PATH}/Plex/Movies"
+
+  echo ""
+  echo "============================================"
+  echo "  Samba Share"
+  echo "============================================"
+  read -rp "Set up a Samba share? [y/N]: " setup_samba
+  if [[ "$setup_samba" =~ ^[yY] ]]; then
+    if ! command -v smbd >/dev/null 2>&1; then
+      echo "Installing Samba..."
+      DEBIAN_FRONTEND=noninteractive apt-get install -y samba
+    fi
+    read -rp "Enter share name [media]: " SHARE_NAME
+    SHARE_NAME="${SHARE_NAME:-media}"
+    if grep -q "^\\[${SHARE_NAME}\\]" /etc/samba/smb.conf 2>/dev/null; then
+      echo "Share '${SHARE_NAME}' already exists in smb.conf."
+    else
+      cat >> /etc/samba/smb.conf <<EOF
+
+[${SHARE_NAME}]
+  path = ${MOUNT_PATH}
+  browseable = yes
+  read only = no
+  valid users = @sambashare
+  create mask = 0775
+  directory mask = 0775
+  force group = sambashare
+EOF
+      echo "Share '${SHARE_NAME}' added to smb.conf."
+    fi
+    systemctl restart smbd 2>/dev/null || true
+  fi
+
+  echo ""
+  echo "============================================"
+  echo "  Group & Permissions"
+  echo "============================================"
+  read -rp "Set up sambashare group? [y/N]: " setup_group
+  if [[ "$setup_group" =~ ^[yY] ]]; then
+    if ! getent group sambashare >/dev/null; then
+      groupadd sambashare
+      echo "Created group 'sambashare'."
+    fi
+    local -a group_users=()
+    for u in prowlarr radarr qbittorrent plex "$SUDO_CALLER"; do
+      if id "$u" >/dev/null 2>&1; then
+        usermod -aG sambashare "$u" 2>/dev/null || true
+        group_users+=("$u")
+      fi
+    done
+    echo "Users added to sambashare: ${group_users[*]}"
+    chown "root:sambashare" "$MOUNT_PATH"
+    chmod 2770 "$MOUNT_PATH"
+  fi
+
+  echo ""
+  echo "============================================"
+  echo "  Creating Directories"
+  echo "============================================"
+  mkdir -p "$PLEX_DOWNLOADS" "$PLEX_DOWNLOADS/tmp" "$PLEX_MOVIES"
+  echo "Created: $PLEX_DOWNLOADS"
+  echo "Created: $PLEX_DOWNLOADS/tmp"
+  echo "Created: $PLEX_MOVIES"
+
+  echo ""
+  echo "============================================"
+  echo "  Configuring Prowlarr Authentication"
+  echo "============================================"
+  if [[ -f /var/lib/prowlarr/config.xml ]]; then
+    local prowlarr_key
+    prowlarr_key=$(grep -oP '(?<=<ApiKey>)[^<]+' /var/lib/prowlarr/config.xml 2>/dev/null) || true
+    if [[ -n "$prowlarr_key" ]]; then
+      local i
+      for i in $(seq 1 12); do
+        if curl -s "http://localhost:9696/api/v1/system/status?apiKey=${prowlarr_key}" >/dev/null 2>&1; then
+          break
+        fi
+        sleep 5
+      done
+      local prowlarr_config
+      prowlarr_config=$(curl -s "http://localhost:9696/api/v1/config/host/1?apiKey=${prowlarr_key}" 2>/dev/null) || true
+      if [[ -n "$prowlarr_config" ]]; then
+        local new_config
+        new_config=$(WEBUI_USER="$WEBUI_USER" WEBUI_PASS="$WEBUI_PASS" python3 -c "
+import os, json, sys
+d = json.load(sys.stdin)
+d['authenticationMethod'] = 'Forms'
+d['username'] = os.environ['WEBUI_USER']
+d['password'] = os.environ['WEBUI_PASS']
+print(json.dumps(d))
+" <<< "$prowlarr_config" 2>/dev/null) || new_config=""
+        if [[ -n "$new_config" ]]; then
+          curl -s -X PUT "http://localhost:9696/api/v1/config/host/1?apiKey=${prowlarr_key}" \
+            -H "Content-Type: application/json" \
+            -d "$new_config" >/dev/null 2>&1 && echo "Prowlarr auth configured." \
+            || echo "Failed to configure Prowlarr auth."
+        fi
+      fi
+    else
+      echo "Prowlarr API key not found."
+    fi
+  else
+    echo "Prowlarr config not found. Skipping."
+  fi
+
+  echo ""
+  echo "============================================"
+  echo "  Configuring Radarr Authentication"
+  echo "============================================"
+  local radarr_conf=""
+  for candidate in "/var/lib/radarr/config.xml" "/home/radarr/.config/Radarr/config.xml" "/opt/Radarr/config.xml"; do
+    if [[ -f "$candidate" ]]; then
+      radarr_conf="$candidate"
+      break
+    fi
+  done
+  if [[ -n "$radarr_conf" ]]; then
+    local radarr_key
+    radarr_key=$(grep -oP '(?<=<ApiKey>)[^<]+' "$radarr_conf" 2>/dev/null) || true
+    if [[ -n "$radarr_key" ]]; then
+      for i in $(seq 1 12); do
+        if curl -s "http://localhost:7878/api/v3/system/status?apiKey=${radarr_key}" >/dev/null 2>&1; then
+          break
+        fi
+        sleep 5
+      done
+      local radarr_host_config
+      radarr_host_config=$(curl -s "http://localhost:7878/api/v3/config/host/1?apiKey=${radarr_key}" 2>/dev/null) || true
+      if [[ -n "$radarr_host_config" ]]; then
+        local new_config
+        new_config=$(WEBUI_USER="$WEBUI_USER" WEBUI_PASS="$WEBUI_PASS" python3 -c "
+import os, json, sys
+d = json.load(sys.stdin)
+d['authenticationMethod'] = 'Forms'
+d['username'] = os.environ['WEBUI_USER']
+d['password'] = os.environ['WEBUI_PASS']
+print(json.dumps(d))
+" <<< "$radarr_host_config" 2>/dev/null) || new_config=""
+        if [[ -n "$new_config" ]]; then
+          curl -s -X PUT "http://localhost:7878/api/v3/config/host/1?apiKey=${radarr_key}" \
+            -H "Content-Type: application/json" \
+            -d "$new_config" >/dev/null 2>&1 && echo "Radarr auth configured." \
+            || echo "Failed to configure Radarr auth."
+        fi
+      fi
+    else
+      echo "Radarr API key not found."
+    fi
+  else
+    echo "Radarr config not found. Skipping."
+  fi
+
+  echo ""
+  echo "============================================"
+  echo "  Configuring qBittorrent"
+  echo "============================================"
+  if systemctl is-active --quiet qbittorrent-nox 2>/dev/null; then
+    local qb_response
+    local cookie_file
+    cookie_file="$(mktemp)"
+    qb_response=$(curl -s -c "$cookie_file" \
+      "http://localhost:8080/api/v2/auth/login" \
+      --data "username=admin&password=adminadmin" 2>/dev/null)
+    if [[ "$qb_response" != "Ok." ]]; then
+      local temp_pass
+      temp_pass=$(journalctl -u qbittorrent-nox -n 30 --no-pager 2>/dev/null | grep -oP 'temporary password is provided for this session: \K\S+' | tail -1) || temp_pass=""
+      if [[ -n "$temp_pass" ]]; then
+        qb_response=$(curl -s -c "$cookie_file" \
+          "http://localhost:8080/api/v2/auth/login" \
+          --data "username=admin&password=${temp_pass}" 2>/dev/null)
+      fi
+    fi
+    if [[ "$qb_response" == "Ok." ]]; then
+      echo "Logged into qBittorrent."
+      curl -s -b "$cookie_file" \
+        "http://localhost:8080/api/v2/app/setPreferences" \
+        --data-urlencode "json={\"web_ui_username\":\"${WEBUI_USER}\",\"web_ui_password\":\"${WEBUI_PASS}\"}" >/dev/null 2>&1 || true
+      curl -s -b "$cookie_file" \
+        "http://localhost:8080/api/v2/app/setPreferences" \
+        --data-urlencode "json={\"save_path\":\"${PLEX_DOWNLOADS}\",\"temp_path\":\"${PLEX_DOWNLOADS}/tmp\",\"temp_path_enabled\":true}" >/dev/null 2>&1 || true
+      echo "qBittorrent configured."
+    else
+      echo "Could not log into qBittorrent. Set credentials manually."
+    fi
+    rm -f "$cookie_file"
+  else
+    echo "qBittorrent is not running. Skipping."
+  fi
+
+  echo ""
+  echo "============================================"
+  echo "  Configuring Radarr Root Folder"
+  echo "============================================"
+  if systemctl is-active --quiet radarr 2>/dev/null; then
+    configure_radarr_root_folder "$PLEX_MOVIES"
+  else
+    echo "Radarr not running. Skipping."
+  fi
+
+  local ip_local
+  ip_local="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  ip_local="${ip_local:-SERVER_IP}"
+  echo ""
+  echo "============================================"
+  echo "  Setup Complete - Summary"
+  echo "============================================"
+  echo "WebUI Username:  ${WEBUI_USER}"
+  echo "WebUI Password:  ${WEBUI_PASS}"
+  echo "Mount Path:      ${MOUNT_PATH}"
+  echo "Downloads:       ${PLEX_DOWNLOADS}"
+  echo "Movies:          ${PLEX_MOVIES}"
+  echo ""
+  echo "Prowlarr:        http://${ip_local}:9696"
+  echo "Radarr:          http://${ip_local}:7878"
+  echo "qBittorrent:     http://${ip_local}:8080"
+  echo "Plex:            http://${ip_local}:32400/web"
+  echo ""
+}
+
 if [[ "${1:-}" == "--claim-plex" ]]; then
   require_root
   claim_plex_server
@@ -502,8 +796,9 @@ else
     echo "  4) Fix permissions on existing OMV folders"
     echo "  5) Claim Plex server"
     echo "  6) Purge everything and start fresh"
-    echo "  7) Exit"
-    read -rp "Choice [1-7]: " choice
+    echo "  7) Setup share, credentials & configure services"
+    echo "  8) Exit"
+    read -rp "Choice [1-8]: " choice
     case "$choice" in
       1) main ;;
       2) main_omv ;;
@@ -511,7 +806,8 @@ else
       4) fix_permissions_existing ;;
       5) require_root; claim_plex_server ;;
       6) purge_all ;;
-      7) echo "Exiting."; exit 0 ;;
+      7) require_root; setup_share_and_creds ;;
+      8) echo "Exiting."; exit 0 ;;
     esac
     echo ""
     read -rp "Press Enter to continue..."
