@@ -654,6 +654,12 @@ EOF
       fi
     done
     echo "Users added to sambashare: ${group_users[*]}"
+    if command -v smbpasswd >/dev/null 2>&1; then
+      echo "Setting Samba password for ${SUDO_CALLER} (matches WebUI password)..."
+      printf "%s\n%s" "$WEBUI_PASS" "$WEBUI_PASS" | smbpasswd -a -s "$SUDO_CALLER" 2>/dev/null \
+        || printf "%s\n%s" "$WEBUI_PASS" "$WEBUI_PASS" | smbpasswd -s "$SUDO_CALLER" 2>/dev/null \
+        || echo "  Warning: could not set Samba password. Run 'smbpasswd ${SUDO_CALLER}' manually."
+    fi
     chown "root:sambashare" "$MOUNT_PATH"
     chmod 2770 "$MOUNT_PATH"
   fi
