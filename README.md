@@ -22,6 +22,11 @@ Or with sudo:
 curl -fsSL https://raw.githubusercontent.com/sosaramosalexis/deb-autosetRR/main/install.sh | sudo bash
 ```
 
+Or via process substitution (no file written):
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/sosaramosalexis/deb-autosetRR/main/install.sh)
+```
+
 ## Menu
 
 ```
