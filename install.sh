@@ -487,7 +487,7 @@ setup_share_and_creds() {
   local WEBUI_USER WEBUI_PASS
   local MOUNT_PATH MOUNT_NAME DISK_NAME DISK_SEL
   local SHARE_NAME SUDO_CALLER
-  local line name size mp mountpoint uuid root_dev root_disk part_mp existing_fs fstype
+  local line name size mp mountpoint uuid part_mp existing_fs fstype
 
   SUDO_CALLER="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
 
@@ -509,12 +509,6 @@ setup_share_and_creds() {
     local -a disks=()
     local -a disk_sizes=()
     echo ""
-    root_dev=$(findmnt -n -o SOURCE / 2>/dev/null || echo "")
-    root_disk=""
-    if [[ -n "$root_dev" ]]; then
-      root_disk=$(lsblk -nlo PKNAME "$root_dev" 2>/dev/null || true)
-    fi
-
     echo "Available disks:"
     while IFS= read -r line; do
       name=$(echo "$line" | awk '{print $1}')
@@ -522,7 +516,7 @@ setup_share_and_creds() {
       model=$(lsblk -dnlo MODEL "/dev/${name}" 2>/dev/null)
       [[ -z "$model" ]] && model="N/A"
 
-      if [[ "$name" == "$root_disk" ]]; then
+      if lsblk -nlo MOUNTPOINT "/dev/${name}" 2>/dev/null | grep -qxF '/'; then
         tag="[OS]  ← system disk, DO NOT FORMAT"
       else
         tag="[DATA]"
