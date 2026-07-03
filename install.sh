@@ -655,10 +655,43 @@ EOF
     done
     echo "Users added to sambashare: ${group_users[*]}"
     if command -v smbpasswd >/dev/null 2>&1; then
-      echo "Setting Samba password for ${SUDO_CALLER} (matches WebUI password)..."
-      printf "%s\n%s" "$WEBUI_PASS" "$WEBUI_PASS" | smbpasswd -a -s "$SUDO_CALLER" 2>/dev/null \
-        || printf "%s\n%s" "$WEBUI_PASS" "$WEBUI_PASS" | smbpasswd -s "$SUDO_CALLER" 2>/dev/null \
-        || echo "  Warning: could not set Samba password. Run 'smbpasswd ${SUDO_CALLER}' manually."
+      local smb_user smb_choice i
+      echo ""
+      read -rp "Set Samba password for a user? [y/N]: " setup_smb_user
+      if [[ "$setup_smb_user" =~ ^[yY] ]]; then
+        echo "  1) Pick from existing local users"
+        echo "  2) Enter a username"
+        read -rp "Choice [1]: " smb_choice
+        smb_choice="${smb_choice:-1}"
+        if [[ "$smb_choice" == "1" ]]; then
+          local -a local_users=()
+          while IFS=: read -r u _ uid _; do
+            if [[ "$uid" -ge 1000 ]] && [[ "$u" != "nobody" ]]; then
+              local_users+=("$u")
+            fi
+          done < /etc/passwd
+          if [[ ${#local_users[@]} -eq 0 ]]; then
+            echo "No local users found (UID >= 1000)."
+            smb_user="$SUDO_CALLER"
+          else
+            echo "Local users:"
+            for i in "${!local_users[@]}"; do
+              echo "  $((i+1))) ${local_users[$i]}"
+            done
+            read -rp "Select user [1]: " smb_choice
+            smb_choice="${smb_choice:-1}"
+            smb_user="${local_users[$((smb_choice-1))]}"
+          fi
+        else
+          read -rp "Enter username: " smb_user
+        fi
+        if [[ -n "$smb_user" ]]; then
+          echo "Setting Samba password for ${smb_user} (matches WebUI password)..."
+          printf "%s\n%s" "$WEBUI_PASS" "$WEBUI_PASS" | smbpasswd -a -s "$smb_user" 2>/dev/null \
+            || printf "%s\n%s" "$WEBUI_PASS" "$WEBUI_PASS" | smbpasswd -s "$smb_user" 2>/dev/null \
+            || echo "  Warning: could not set Samba password. Run 'smbpasswd ${smb_user}' manually."
+        fi
+      fi
     fi
     chown "root:sambashare" "$MOUNT_PATH"
     chmod 2770 "$MOUNT_PATH"
